@@ -1,0 +1,24 @@
+{{template "header" .}}
+
+<div id="content" class="ui text container">
+  <h2>Hello, <span>{{.Profile.name}}</span>!</h2>
+
+  <div>
+  <script>
+  function copy() {
+    let textarea = document.getElementById("textarea");
+    textarea.select();
+    document.execCommand("copy");
+  }
+  </script>
+
+    <p></p>
+    <p>You have successfully generated DA-SVID Token and can use it to access private functions. </p>
+    <br>
+    <p>Generated token:</p>
+    <textarea id="textarea" rows="8" cols="100">{{.DASVIDToken}}</textarea></p> 
+    <p><br></p>
+    
+  </div>
+</div>
+{{template "footer"}}
