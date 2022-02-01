@@ -14,6 +14,7 @@ import (
 	"os"
 	"net"
 	"context"
+	"time"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
@@ -51,7 +52,6 @@ type PocData struct {
 	Profile         map[string]string
 	IsAuthenticated bool
 	HaveDASVID		bool
-	// Added filds in the customData
 	AccessToken     string
 	PublicKey		string
 	SigValidation 	string
@@ -107,6 +107,11 @@ func GetOutboundIP() string {
     return uri
 }
 
+func timeTrack(start time.Time, name string) {
+    elapsed := time.Since(start)
+    log.Printf("%s execution time is %s", name, elapsed)
+}
+
 func main() {
 	sessionStore.Options.MaxAge = 180
 	oktaUtils.ParseEnvironment()
@@ -154,6 +159,9 @@ func HomeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
+
+	defer timeTrack(time.Now(), "Login")
+
 	w.Header().Add("Cache-Control", "no-cache") // See https://github.com/okta/samples-golang/issues/20
 	
 	// Retrieve local IP
@@ -179,6 +187,8 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func AuthCodeCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	defer timeTrack(time.Now(), "Callback Handler")
+
 	// Check the state that was returned in the query string is the same as the above state
 	if r.URL.Query().Get("state") != state {
 		fmt.Fprintln(w, "The state was not as expected")
@@ -214,11 +224,14 @@ func AuthCodeCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	session.Values["access_token"] = exchange.AccessToken
 	session.Save(r, w)
 	
+	log.Printf("New login detected!")
 
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func ProfileHandler(w http.ResponseWriter, r *http.Request) {
+
+	defer timeTrack(time.Now(), "Profile Handler")
 
 	Data = PocData{
 		AppURI:			 HostIP,
@@ -230,6 +243,8 @@ func ProfileHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func GetdasvidHandler(w http.ResponseWriter, r *http.Request) {
+
+	defer timeTrack(time.Now(), "Get DASVID Handler")
 
 	receivedresponse := getdasvid(os.Getenv("oauthtoken"))
 
@@ -271,6 +286,8 @@ func GetdasvidHandler(w http.ResponseWriter, r *http.Request) {
 
 func CheckfundsHandler(w http.ResponseWriter, r *http.Request) {
 
+	defer timeTrack(time.Now(), "Check Balance")
+
 	defaultresponse := `{"balance":"1200"}`
 	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
 	
@@ -306,6 +323,8 @@ func LogoutHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func exchangeCode(code string, r *http.Request) Exchange {
+
+	defer timeTrack(time.Now(), "Exchange OKTA Oauth code")
 
 	// Retrieve local IP
 	uri := "http://" + HostIP + "/callback"
@@ -358,6 +377,8 @@ func haveDASVID() bool {
 }
 
 func getProfileData(r *http.Request) map[string]string {
+
+
 	m := make(map[string]string)
 
 	session, err := sessionStore.Get(r, "okta-hosted-login-session-store")
@@ -383,6 +404,7 @@ func getProfileData(r *http.Request) map[string]string {
 }
 
 func verifyToken(t string) (*verifier.Jwt, error) {
+
 	tv := map[string]string{}
 	tv["nonce"] = nonce
 	tv["aud"] = os.Getenv("CLIENT_ID")
@@ -414,6 +436,8 @@ type Exchange struct {
 }
 
 func getdasvid(oauthtoken string) (string) {
+
+	defer timeTrack(time.Now(), "Get DASVID")
 	
 	// Asserting workload will validate oauth token, so we dont need to do it here.
 	// stablish mtls with asserting workload and call mint endpoint, passing oauth token 
