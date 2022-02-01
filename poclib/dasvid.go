@@ -6,6 +6,7 @@ import (
 	"strings"
 	"encoding/base64"
 	"fmt"
+	"log"
 	
 	// To sig. validation 
 	"crypto"
@@ -14,16 +15,17 @@ import (
 	"encoding/binary"
 	"math/big"
 
-	// to retrieve JWT claims
-	// NOTE: look for another JWT lib
 	"time"
+	"os"
+	"encoding/json"
 		
 	// // to retrieve PrivateKey
 	"bufio"
 	"crypto/x509"
     "encoding/pem"
 
-	// to jwt generation
+	// To JWT generation
+	// Obs: change jwt lib togo-jose could be good as it is the lib used in spire 
 	// "gopkg.in/square/go-jose.v2"
 	// "gopkg.in/square/go-jose.v2/cryptosigner"
 	// mintJWT "gopkg.in/square/go-jose.v2/jwt"
@@ -31,16 +33,9 @@ import (
 	JWTworker "github.com/dgrijalva/jwt-go"
 	"flag"
 
-	// To introspectAccessToken (online)
-	"os"
-	"io/ioutil"
-	"net/http"
-	"encoding/json"
-
 	// To fetch SVID
 	"context"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
-	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
@@ -115,114 +110,74 @@ func VerifySignature(jwtToken string, key JWK) error {
 
 func Mintdasvid(iss string, sub string, dpa string, dpr string, key interface{}) string{
 
-	 // gets current time and sets default for exp time
-	 issue_time := time.Now().Round(0).Unix()
-	 exp_time := time.Now().Add(time.Hour * 24).Round(0).Unix()
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+	// Set issue and exp time
+	issue_time := time.Now().Round(0).Unix()
+	exp_time := time.Now().Add(time.Minute * 2).Round(0).Unix()
  
-	 // TODO: enable entering values as flags or ordered arguments
-	 // Declaring flags
-	 issuer := flag.String("iss", iss, "issuer(iss) = SPIFFE ID of the workload that generated the DA-SVID (Asserting workload")
-	 assert := flag.Int64("aat", issue_time, "asserted at(aat) = time at which the assertion made in the DA-SVID was verified by the asserting workload")
-	 exp := flag.Int64("exp", exp_time, "expiration time(exp) = as small as reasonably possible, issue time + 1s by default.")
-	 subj := flag.String("sub", sub, "subject (sub) = the identity about which the assertion is being made. Subject workload's SPIFFE ID.")
-	 dlpa := flag.String("dpa", dpa, "delegated authority (dpa) = ")
-	 dlpr := flag.String("dpr", dpr, "delegated principal (dpr) = The Principal")
+	// Declaring flags
+	issuer := flag.String("iss", iss, "issuer(iss) = SPIFFE ID of the workload that generated the DA-SVID (Asserting workload")
+	assert := flag.Int64("aat", issue_time, "asserted at(aat) = time at which the assertion made in the DA-SVID was verified by the asserting workload")
+	exp := flag.Int64("exp", exp_time, "expiration time(exp) = as small as reasonably possible, issue time + 1s by default.")
+	subj := flag.String("sub", sub, "subject (sub) = the identity about which the assertion is being made. Subject workload's SPIFFE ID.")
+	dlpa := flag.String("dpa", dpa, "delegated authority (dpa) = ")
+	dlpr := flag.String("dpr", dpr, "delegated principal (dpr) = The Principal")
  
-	 flag.Parse()
+	flag.Parse()
  
-	 // Building JWT
-	 token := mint.NewWithClaims(mint.SigningMethodES256, mint.MapClaims{
-		//  "typ": "JWT",
-		//  "alg": "HS256",
+	// Build Token
+	token := mint.NewWithClaims(mint.SigningMethodRS256, mint.MapClaims{
 		"exp": *exp,
-		//  "dasvid": map[string]interface{}{
-			"iss": *issuer,
-			"aat": *assert,
-			"sub": *subj,
-			"dpa": *dlpa,
-			"dpr": *dlpr,
-			"iat": issue_time,
-		//  },
-	 })
+		"iss": *issuer,
+		"aat": *assert,
+		"sub": *subj,
+		"dpa": *dlpa,
+		"dpr": *dlpr,
+		"iat": issue_time,
+	})
  
- 	 tokenString, err := token.SignedString(key)
+	// Sign Token
+ 	tokenString, err := token.SignedString(key)
+ 	if err != nil {
+ 		log.Fatalf("Error generating JWT: %v", err)
+	}
  
-	 //JWT gen error handling
-	 if err != nil {
- 
-		 fmt.Println(err)
- 
-	 }
- 
-		//  fmt.Println(tokenString)
-		return tokenString
- 
+	return tokenString
 }
 
 func ParseTokenClaims(strAT string) map[string]interface{} {
 		// Parse access token without validating signature
 		token, _, err := new(JWTworker.Parser).ParseUnverified(strAT, JWTworker.MapClaims{})
 		if err != nil {
-			fmt.Println(err)
+			log.Fatalf("Error parsing JWT claims: %v", err)
 		}
 		claims, _ := token.Claims.(JWTworker.MapClaims)
 		
 		return claims
 }
 
-func ValidateTokenExp(claims map[string]interface{}) (expresult string) {
+func ValidateTokenExp(claims map[string]interface{}) (expresult bool, remainingtime string) {
 
-	// 	// Verify if token is still valid
 	tm := time.Unix(int64(claims["exp"].(float64)), 0)
 	remaining := tm.Sub(time.Now())
-	// fmt.Println("remaining value")
-	// fmt.Println(remaining)
+
 	if remaining > 0 {
-		expresult = fmt.Sprintf("Token valid for more %v", remaining) 
-		// fmt.Println("Token valid for more %v", remaining) 
+		expresult = true 
 	} else {
-		expresult = fmt.Sprintf("Token expired!")
-		// fmt.Println("Token expired!")
+		expresult = false
 	}
 
-	return expresult
+	return expresult, remaining.String()
 
-}
-
-func InstrospectAccessToken(t string) map[string]interface{}  {
-
-	payload := strings.NewReader(`token=`+t)
-
-	m := make(map[string]interface{})
-	authHeader := base64.StdEncoding.EncodeToString(
-		[]byte(os.Getenv("CLIENT_ID") + ":" + os.Getenv("CLIENT_SECRET")))
-
-	reqUrl := os.Getenv("ISSUER") + "/v1/introspect"
-
-	req, _ := http.NewRequest("POST", reqUrl, payload)
-	h := req.Header
-	h.Add("Content-Type", "application/x-www-form-urlencoded")
-	h.Add("Authorization", "Basic "+authHeader)
-	h.Add("Accept", "application/json")
-
-	// h.Add("token", t)
-	// h.Add("token_type_hint", "access_token")
-	
-	client := &http.Client{}
-	resp, _ := client.Do(req)
-	body, _ := ioutil.ReadAll(resp.Body)
-	defer resp.Body.Close()
-	json.Unmarshal(body, &m)
-
-	return m
 }
 
 func RetrievePrivateKey(path string) interface{} {
+
 	// Open file containing private Key
 	privateKeyFile, err := os.Open(path)
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		log.Fatalf("Error opening private key file: %v", err)
 	}
 
 	pemfileinfo, _ := privateKeyFile.Stat()
@@ -233,55 +188,62 @@ func RetrievePrivateKey(path string) interface{} {
 	pemdata, _ := pem.Decode([]byte(pembytes))
 	privateKeyFile.Close()
 
-	// Extract Private Key
-	privateKeyImported, err := x509.ParsePKCS8PrivateKey(pemdata.Bytes)
+	// Extract Private Key 
+	// updated to use RSA since key used will not be fetched from SPIRE
+	privateKeyImported, err := x509.ParsePKCS1PrivateKey(pemdata.Bytes)
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		log.Fatalf("Error parsing private key: %v", err)
 	}
 	return privateKeyImported
 }
 
-func RetrievePublicKey(path string) interface{} {
+func RetrievePEMPublicKey(path string) interface{} {
 
-	// Open file containing private Key
-	privateKeyFile, err := os.Open(path)
+	// Open file containing public Key
+	publicKeyFile, err := os.Open(path)
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		log.Fatalf("Error opening public key file: %v", err)
 	}
 
-	pemfileinfo, _ := privateKeyFile.Stat()
+	pemfileinfo, _ := publicKeyFile.Stat()
 	var size int64 = pemfileinfo.Size()
 	pembytes := make([]byte, size)
-	buffer := bufio.NewReader(privateKeyFile)
+	buffer := bufio.NewReader(publicKeyFile)
 	_, err = buffer.Read(pembytes)
-	pemdata, _ := pem.Decode([]byte(pembytes))
-	cert, _ := x509.ParseCertificate(pemdata.Bytes)
-	privateKeyFile.Close()
 
-	// // Extract Private Key
-	// privateKeyImported, err := x509.ParsePKCS8PrivateKey(pemdata.Bytes)
-	// if err != nil {
-	// 	fmt.Println(err)
-	// 	os.Exit(1)
-	// }
+	block, _ := pem.Decode(pembytes)
+	if block == nil {
+		log.Printf("No key found: %v", err)
+		// os.Exit(1)
+	}
 
-	publicKey, _ := x509.MarshalPKIXPublicKey(&cert.PublicKey)
+	var publicKey interface{}
+	switch block.Type {
+	case "PUBLIC KEY":
+		publicKey, err = x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return err
+		}
+		
+	default:
+		return fmt.Errorf("Unsupported key type %q", block.Type)
+	}
 
-	// strpubkey := fmt.Sprintf("%v", publicKey)
-	// fmt.Println(strpubkey)
-
+	// Return raw public key (N and E)
 	return publicKey
+
+	// Return 
+	// marshpubic, _ := x509.MarshalPKIXPublicKey(publicKey)
+
+	// return marshpubic
 }
 
 func RetrieveJWKSPublicKey(path string) JWKS {
-	    // Open file containing the keys obtained from /keys endpoint
+	// Open file containing the keys obtained from /keys endpoint
 	// NOTE: Needs to implement cache and retrieve processes
 	jwksFile, err := os.Open(path)
 	if err != nil {
-		fmt.Println("Error in reading jwks")
-		os.Exit(1)
+		log.Fatalf("Error reading jwks file: %v", err)
 	}
 
 	// Decode file and retrieve Public key from Okta application
@@ -289,32 +251,10 @@ func RetrieveJWKSPublicKey(path string) JWKS {
 	var jwks JWKS
 	
 	if err := dec.Decode(&jwks); err != nil {
-		fmt.Println("Unable to read key %s", err)
-		os.Exit(1)
+		log.Fatalf("Unable to read key: %s", err)
 	}
 
 	return jwks
-}
-
-func ExampleFetchJWTSVID() {	
-
-
-	serverID, err := spiffeid.Join("example.org", "server")
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	svid, err := workloadapi.FetchJWTSVID(context.TODO(), jwtsvid.Params{
-		Audience: serverID,
-	})
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	// TODO: use the JWT-SVID
-	svid = svid
 }
 
 func FetchX509SVID() *x509svid.SVID {
@@ -322,17 +262,15 @@ func FetchX509SVID() *x509svid.SVID {
 	defer cancel()
 	
 	// Create a `workloadapi.X509Source`, it will connect to Workload API using provided socket.
-	// If socket path is not defined using `workloadapi.SourceOption`, value from environment variable `SPIFFE_ENDPOINT_SOCKET` is used.
 	source, err := workloadapi.NewX509Source(ctx, workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath)))
 	if err != nil {
-		fmt.Println("Unable to create X509Source: %v", err)
+		log.Fatalf("Unable to create X509Source: %v", err)
 	}
 	defer source.Close()
 
 	svid, err := source.GetX509SVID()
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		log.Fatalf("Unable to fetch SVID: %v", err)
 	}
 
 	return svid

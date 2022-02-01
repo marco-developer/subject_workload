@@ -1,24 +1,34 @@
 {{template "header" .}}
 
+{{if and .IsAuthenticated (eq .Returnmsg "")}}
 <div id="content" class="ui text container">
-  <h2>Hello, <span>{{.Profile.name}}</span>!</h2>
+  <h2>Success!</h2>
 
-  <div>
-  <script>
-  function copy() {
-    let textarea = document.getElementById("textarea");
-    textarea.select();
-    document.execCommand("copy");
-  }
-  </script>
-
-    <p></p>
-    <p>You have successfully generated DA-SVID Token and can use it to access private functions. </p>
+  <p>You have generated a DA-SVID Token allowing Bank App to access your data. </p>
+    <table style="width:40%" class="table table-striped" align="right">
+        <thead>
+        <tr>
+          <th>Claim</th>
+          <th>Value</th>
+        </tr>
+        </thead>
+        <tbody>
+          {{ range $key, $value := .DASVIDClaims }}
+            <tr>
+              <td>{{ $key }}</td>
+              <td id="claim-{{$key}}">{{ $value }}</td>
+            </tr>
+          {{ end }}
+        </tbody>
+    </table>
     <br>
     <p>Generated token:</p>
-    <textarea id="textarea" rows="8" cols="100">{{.DASVIDToken}}</textarea></p> 
+    <textarea id="textarea" rows="8" cols="60">{{.DASVIDToken}}</textarea></p> 
+
     <p><br></p>
-    
+{{else}}
+  <div>
+        <p style="color: red; font-size: 20px; text-align:center;">Please login to access Bank App services.</p>
   </div>
-</div>
+ {{end}}
 {{template "footer"}}

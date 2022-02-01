@@ -41,10 +41,13 @@ var (
 
 const (
 	// Workload API socket path
-	socketPath    = "unix:///tmp/spire-agent/public/api.sock"
+	socketPath   	= "unix:///tmp/spire-agent/public/api.sock"
+	HostIP 			= "192.168.0.5:8080"
+	AssertingwlIP 	= "192.168.0.5:8443" 
 )
 
 type PocData struct {
+	AppURI			string
 	Profile         map[string]string
 	IsAuthenticated bool
 	HaveDASVID		bool
@@ -58,6 +61,7 @@ type PocData struct {
 	DASVIDClaims 	map[string]interface{}
 	DasvidExpValidation string
 	Returnmsg		string
+	Balance			string
 		
 }
 
@@ -68,7 +72,12 @@ type Contents struct {
 	DASVIDToken					string `json:",omitempty"`
 }
 
+type Balance struct {
+	Balance		string `json:",omitempty"`
+}
+
 var temp Contents
+var funds Balance
 var oktaclaims map[string]interface{}
 var dasvidclaims map[string]interface{}
 
@@ -85,7 +94,7 @@ func generateState() string {
 	return hex.EncodeToString(b)
 }
 
-func GetOutboundIP() net.IP {
+func GetOutboundIP() string {
     conn, err := net.Dial("udp", "8.8.8.8:80")
     if err != nil {
         log.Fatal(err)
@@ -93,33 +102,25 @@ func GetOutboundIP() net.IP {
     defer conn.Close()
 
     localAddr := conn.LocalAddr().(*net.UDPAddr)
-
-    return localAddr.IP
+	StrIPlocal := fmt.Sprintf("%v", localAddr.IP)
+	uri := StrIPlocal + ":8080"
+    return uri
 }
 
 func main() {
+	sessionStore.Options.MaxAge = 180
 	oktaUtils.ParseEnvironment()
 
 	// Retrieve local IP
-	Iplocal := GetOutboundIP()
-	StrIPlocal := fmt.Sprintf("%v", Iplocal)
-	uri := StrIPlocal + ":8080"
-	
-
-	//  APIs:
-	//  1- Subj WL
-	//  2- Asserting WL (mint, validate)
+	uri := GetOutboundIP()
 
 	http.HandleFunc("/", HomeHandler)
 	http.HandleFunc("/login", LoginHandler)
 	http.HandleFunc("/callback", AuthCodeCallbackHandler)
 	http.HandleFunc("/profile", ProfileHandler)
 	http.HandleFunc("/logout", LogoutHandler)
-	// http.HandleFunc("/step1", step1_validateoauth)
-	// http.HandleFunc("/step2a", step2a_decodeoauth)
-	http.HandleFunc("/checkfunds", CheckfundsHandler)
+	http.HandleFunc("/get_balance", CheckfundsHandler)
 	http.HandleFunc("/getdasvid", GetdasvidHandler)
-	// http.HandleFunc("/step3", step3_validatedasvid)
 	http.Handle("/img/", http.StripPrefix("/img/", http.FileServer(http.Dir("./img"))))
 
 	log.Print("Subject workload starting at ", uri)
@@ -141,10 +142,10 @@ func HomeHandler(w http.ResponseWriter, r *http.Request) {
 	strAT := fmt.Sprintf("%v", session.Values["access_token"])
 	
 	Data = PocData{
+		AppURI:			 HostIP,
 		Profile:         getProfileData(r),
 		IsAuthenticated: isAuthenticated(r),
 		HaveDASVID:		 haveDASVID(),
-		// Pass access token as part of Data
 		AccessToken:	 strAT,
 	}
 
@@ -156,9 +157,9 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Cache-Control", "no-cache") // See https://github.com/okta/samples-golang/issues/20
 	
 	// Retrieve local IP
-	Iplocal := GetOutboundIP()
-	StrIPlocal := fmt.Sprintf("%v", Iplocal)
-	uri := "http://" + StrIPlocal + ":8080/callback"
+	// Must be authorized in OKTA configuration.
+	// Hard coded here to allow the redirection to subj wl container
+	uri := "http://" + HostIP + "/callback"
 	
 	nonce, _ = oktaUtils.GenerateNonce()
 	var redirectPath string
@@ -209,7 +210,6 @@ func AuthCodeCallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	os.Setenv("oauthtoken", exchange.AccessToken)
 
-	// Remove session soon... useless 
 	session.Values["id_token"] = exchange.IdToken
 	session.Values["access_token"] = exchange.AccessToken
 	session.Save(r, w)
@@ -221,91 +221,12 @@ func AuthCodeCallbackHandler(w http.ResponseWriter, r *http.Request) {
 func ProfileHandler(w http.ResponseWriter, r *http.Request) {
 
 	Data = PocData{
+		AppURI:			 HostIP,
 		Profile:         getProfileData(r),
 		IsAuthenticated: isAuthenticated(r),
 		HaveDASVID:		 haveDASVID(),
 	}
 	tpl.ExecuteTemplate(w, "profile.gohtml", Data)
-}
-
-func step1_validateoauth(w http.ResponseWriter, r *http.Request) {
-	
-	var sigresult string
-	var expresult string
-
-	// Retrieve claims and validate token exp without signature
-	oktaclaims = dasvid.ParseTokenClaims(Data.AccessToken)
-	expresult = dasvid.ValidateTokenExp(oktaclaims)
-
-	// Retrieve Public Key from JWKS file
-	pubkey := dasvid.RetrieveJWKSPublicKey("./jwks.json")
-
-	// Verify token signature using extracted Public key
-	err := dasvid.VerifySignature(Data.AccessToken, pubkey.Keys[0])
-	if err != nil {
-		sigresult = fmt.Sprintf("Failed signature verification: %v", err)
-	} else {
-		sigresult = "Signature successfuly validated!"
-	}
-
-	Data = PocData{
-		Profile:         getProfileData(r),
-		IsAuthenticated: isAuthenticated(r),
-		// Token validation info
-		SigValidation:	 sigresult,
-		ExpValidation: 	 expresult,
-		PublicKey: 		 fmt.Sprintf("%v", pubkey.Keys[0]),
-		RetClaims:		 oktaclaims, 
-	}
-
-	tpl.ExecuteTemplate(w, "validate.gohtml", Data)
-
-}
-
-func step3_validatedasvid(w http.ResponseWriter, r *http.Request) {
-	
-	var dasvidexpresult string
-	
-	// Retrieve claims and validate token exp without signature
-	datoken := os.Getenv("dasvidtoken")
-	strdatoken := fmt.Sprintf("%v", datoken)
-
-	dasvidclaims = dasvid.ParseTokenClaims(strdatoken)
-	dasvidexpresult = dasvid.ValidateTokenExp(dasvidclaims)
-
-	// 	// Retrieve Public Key from JWKS file
-	// 	// pubkey := dasvid.RetrieveJWKSPublicKey("./dasvidkey.json")
-	// 	pubkey := dasvid.RetrievePublicKey("./svid.0.pem")
-
-	// 	// Verify token signature using extracted Public key
-	// 	// err := dasvid.VerifySignature(Data.DASVIDToken, pubkey)
-	// 	// if err != nil {
-	// 	// 	dasvidsigresult = fmt.Sprintf("Failed signature verification: %v", err)
-	// 	// } else {
-	// 	// 	dasvidsigresult = "Signature successfuly validated!"
-	// 	// }
-	
-	Data = PocData{
-		Profile:         		getProfileData(r),
-		IsAuthenticated: 		isAuthenticated(r),
-		DasvidExpValidation: 	dasvidexpresult,
-		DASVIDClaims:			dasvidclaims,
-	}
-	
-	tpl.ExecuteTemplate(w, "decodedasvid.gohtml", Data)
-
-}
-
-func step2a_decodeoauth(w http.ResponseWriter, r *http.Request) {
-	
-	Data = PocData{
-		Profile:         	 getProfileData(r),
-		IsAuthenticated: 	 isAuthenticated(r),
-		RetClaims:		 	 oktaclaims,
-	}
-	
-	tpl.ExecuteTemplate(w, "decode.gohtml", Data)
-
 }
 
 func GetdasvidHandler(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +238,7 @@ func GetdasvidHandler(w http.ResponseWriter, r *http.Request) {
 	// 	log.Fatalf("error:", err)
 	// }
 
-	if (*temp.OauthSigValidation != true) || (*temp.OauthExpValidation == false) {
+	if (*temp.OauthSigValidation == false) || (*temp.OauthExpValidation == false) {
 
 		returnmsg := "Oauth token validation error"
 
@@ -330,12 +251,15 @@ func GetdasvidHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	os.Setenv("DASVIDToken", temp.DASVIDToken)
-	// fmt.Println(os.Getenv("DASVIDToken"))
+
+	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
 
 	Data = PocData{
+		AppURI:					HostIP,
 		Profile:         		getProfileData(r),
 		IsAuthenticated: 		isAuthenticated(r),
 		DASVIDToken:			temp.DASVIDToken,
+		DASVIDClaims:			dasvidclaims,
 		HaveDASVID:				haveDASVID(),
 		SigValidation: 			fmt.Sprintf("%v", temp.OauthSigValidation),
 		ExpValidation:			fmt.Sprintf("%v", temp.OauthExpValidation),
@@ -343,28 +267,26 @@ func GetdasvidHandler(w http.ResponseWriter, r *http.Request) {
 
 	tpl.ExecuteTemplate(w, "dasvidgenerated.gohtml", Data)
 
-
 }
 
 func CheckfundsHandler(w http.ResponseWriter, r *http.Request) {
 
+	defaultresponse := `{"balance":"1200"}`
+	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
 	
 	// With dasvid, app can make a call to middle tier, asking for user funds.
+	json.Unmarshal([]byte(defaultresponse), &funds)
 
-	// Result
-	
-	// Logo	< M    E   N  U   > 
+	Data = PocData{
+		AppURI:					HostIP,
+		Profile:         		getProfileData(r),
+		IsAuthenticated: 		isAuthenticated(r),
+		DASVIDClaims:			dasvidclaims,
+		HaveDASVID:				haveDASVID(),
+		Balance:				fmt.Sprintf("%v", funds.Balance),
+	}
 
-	// Client: 			Client_name
-	// Consulting App: 	Subject_name
-	// Token Issuer:	issuer_name
-	// Issued at time:	iat
-	// ZKP:				zkp
-	
-	// Request Date/time
-	// Requested Data (funds)
-
-
+	tpl.ExecuteTemplate(w, "get_balance.gohtml", Data)	
 
 }
 
@@ -376,6 +298,7 @@ func LogoutHandler(w http.ResponseWriter, r *http.Request) {
 
 	delete(session.Values, "id_token")
 	delete(session.Values, "access_token")
+	delete(session.Values, "DASVIDToken")
 
 	session.Save(r, w)
 
@@ -385,9 +308,7 @@ func LogoutHandler(w http.ResponseWriter, r *http.Request) {
 func exchangeCode(code string, r *http.Request) Exchange {
 
 	// Retrieve local IP
-	Iplocal := GetOutboundIP()
-	StrIPlocal := fmt.Sprintf("%v", Iplocal)
-	uri := "http://" + StrIPlocal + ":8080/callback"
+	uri := "http://" + HostIP + "/callback"
 
 	authHeader := base64.StdEncoding.EncodeToString(
 		[]byte(os.Getenv("CLIENT_ID") + ":" + os.Getenv("CLIENT_SECRET")))
@@ -499,12 +420,6 @@ func getdasvid(oauthtoken string) (string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Retrieve local IP
-	// In this PoC example, client and server are running in the same host, so serverIP = clientIP 
-	Iplocal := GetOutboundIP()
-	StrIPlocal := fmt.Sprintf("%v", Iplocal)
-	serverURL := StrIPlocal + ":8443" // asserting workload is responding here
-
 	// Create a `workloadapi.X509Source`, it will connect to Workload API using provided socket path
 	source, err := workloadapi.NewX509Source(ctx, workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath)))
 	if err != nil {
@@ -525,11 +440,11 @@ func getdasvid(oauthtoken string) (string) {
 
 	var endpoint string
 	token := os.Getenv("oauthtoken")
-	endpoint = "https://"+serverURL+"/mint?AccessToken="+token
+	endpoint = "https://"+AssertingwlIP+"/mint?AccessToken="+token
 
 	r, err := client.Get(endpoint)
 	if err != nil {
-		log.Fatalf("Error connecting to %q: %v", serverURL, err)
+		log.Fatalf("Error connecting to %q: %v", AssertingwlIP, err)
 	}
 
 	defer r.Body.Close()
