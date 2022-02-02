@@ -15,6 +15,8 @@ import (
 	"net"
 	"context"
 	"time"
+	"strconv"
+
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
@@ -38,6 +40,7 @@ var (
 	sessionStore = sessions.NewCookieStore([]byte("okta-hosted-login-session-store"))
 	state        = generateState()
 	nonce        = "NonceNotSetYet"
+	
 )
 
 const (
@@ -113,6 +116,8 @@ func timeTrack(start time.Time, name string) {
 }
 
 func main() {
+
+	os.Setenv("Defaultresponse", `{"balance":"1200"}`)
 	sessionStore.Options.MaxAge = 180
 	oktaUtils.ParseEnvironment()
 
@@ -124,8 +129,11 @@ func main() {
 	http.HandleFunc("/callback", AuthCodeCallbackHandler)
 	http.HandleFunc("/profile", ProfileHandler)
 	http.HandleFunc("/logout", LogoutHandler)
-	http.HandleFunc("/get_balance", CheckfundsHandler)
-	http.HandleFunc("/getdasvid", GetdasvidHandler)
+
+	http.HandleFunc("/account", AccountHandler)
+	http.HandleFunc("/get_balance", CheckbalanceHandler)
+	http.HandleFunc("/deposit", DepositHandler)
+
 	http.Handle("/img/", http.StripPrefix("/img/", http.FileServer(http.Dir("./img"))))
 
 	log.Print("Subject workload starting at ", uri)
@@ -242,16 +250,16 @@ func ProfileHandler(w http.ResponseWriter, r *http.Request) {
 	tpl.ExecuteTemplate(w, "profile.gohtml", Data)
 }
 
-func GetdasvidHandler(w http.ResponseWriter, r *http.Request) {
+func AccountHandler(w http.ResponseWriter, r *http.Request) {
 
-	defer timeTrack(time.Now(), "Get DASVID Handler")
+	defer timeTrack(time.Now(), "Account Handler")
 
 	receivedresponse := getdasvid(os.Getenv("oauthtoken"))
 
-	json.Unmarshal([]byte(receivedresponse), &temp)
-	// if err != nil {
-	// 	log.Fatalf("error:", err)
-	// }
+	err := json.Unmarshal([]byte(receivedresponse), &temp)
+	if err != nil {
+		log.Fatalf("error:", err)
+	}
 
 	if (*temp.OauthSigValidation == false) || (*temp.OauthExpValidation == false) {
 
@@ -280,19 +288,32 @@ func GetdasvidHandler(w http.ResponseWriter, r *http.Request) {
 		ExpValidation:			fmt.Sprintf("%v", temp.OauthExpValidation),
 	}
 
-	tpl.ExecuteTemplate(w, "dasvidgenerated.gohtml", Data)
+	tpl.ExecuteTemplate(w, "account.gohtml", Data)
 
 }
 
-func CheckfundsHandler(w http.ResponseWriter, r *http.Request) {
+func CheckbalanceHandler(w http.ResponseWriter, r *http.Request) {
 
 	defer timeTrack(time.Now(), "Check Balance")
 
-	defaultresponse := `{"balance":"1200"}`
+	// target workload na consulta ao bd:
+	// se subj web 
+	//   retorna email e balance
+	
+	// se subj mob
+	//  retorna telefone e balance
+
+	// Resposta padrao pode ser algo tipo:
+	// {"user":"email or phone nmber", "balance":"1200"}
+
 	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
+	defaultresponse := os.Getenv("Defaultresponse")
 	
 	// With dasvid, app can make a call to middle tier, asking for user funds.
-	json.Unmarshal([]byte(defaultresponse), &funds)
+	err := json.Unmarshal([]byte(defaultresponse), &funds)
+	if err != nil {
+		fmt.Println("error:", err)
+	}
 
 	Data = PocData{
 		AppURI:					HostIP,
@@ -300,11 +321,53 @@ func CheckfundsHandler(w http.ResponseWriter, r *http.Request) {
 		IsAuthenticated: 		isAuthenticated(r),
 		DASVIDClaims:			dasvidclaims,
 		HaveDASVID:				haveDASVID(),
-		Balance:				fmt.Sprintf("%v", funds.Balance),
+		Balance:				funds.Balance,
 	}
 
 	tpl.ExecuteTemplate(w, "get_balance.gohtml", Data)	
 
+}
+
+func DepositHandler(w http.ResponseWriter, r *http.Request) {
+
+	defaultresponse := os.Getenv("Defaultresponse")
+	var depositvalue int
+
+	if r.Method != "POST" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
+	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
+	depositvalue, _ = strconv.Atoi(r.FormValue("deposit"))
+
+	// With dasvid, app can make a call to middle tier, asking for user funds.
+	json.Unmarshal([]byte(defaultresponse), &funds)
+
+	tmpcalc, _ := strconv.Atoi(funds.Balance)
+
+	tmpcalc += depositvalue
+
+	funds.Balance = strconv.Itoa(tmpcalc)
+
+	tmp, err := json.Marshal(funds)
+	if err != nil {
+		fmt.Println("error:", err)
+	}
+
+	os.Setenv("Defaultresponse", string(tmp))
+
+	Data = PocData{
+		AppURI:			 HostIP,
+		Profile:         getProfileData(r),
+		IsAuthenticated: isAuthenticated(r),
+		DASVIDClaims:	 dasvidclaims,
+		HaveDASVID:		 haveDASVID(),
+		Balance:		 funds.Balance,
+	}
+
+	
+	tpl.ExecuteTemplate(w, "get_balance.gohtml", Data)
 }
 
 func LogoutHandler(w http.ResponseWriter, r *http.Request) {
