@@ -15,7 +15,7 @@ import (
 	"net"
 	"context"
 	"time"
-	"strconv"
+	// "strconv"
 
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -64,7 +64,7 @@ type PocData struct {
 	DASVIDClaims 	map[string]interface{}
 	DasvidExpValidation string
 	Returnmsg		string
-	Balance			string
+	Balance			int
 		
 }
 
@@ -75,12 +75,14 @@ type Contents struct {
 	DASVIDToken					string `json:",omitempty"`
 }
 
-type Balance struct {
-	Balance		string `json:",omitempty"`
+type Balancetemp struct {
+	User						string `json:",omitempty"`
+	Balance						int `json:",omitempty"`
+	Returnmsg					string `json:",omitempty"`
+
 }
 
 var temp Contents
-var funds Balance
 var oktaclaims map[string]interface{}
 var dasvidclaims map[string]interface{}
 
@@ -97,7 +99,7 @@ func generateState() string {
 	return hex.EncodeToString(b)
 }
 
-func GetOutboundIP() string {
+func GetOutboundIP(port string) string {
     conn, err := net.Dial("udp", "8.8.8.8:80")
     if err != nil {
         log.Fatal(err)
@@ -106,7 +108,7 @@ func GetOutboundIP() string {
 
     localAddr := conn.LocalAddr().(*net.UDPAddr)
 	StrIPlocal := fmt.Sprintf("%v", localAddr.IP)
-	uri := StrIPlocal + ":8080"
+	uri := StrIPlocal + port
     return uri
 }
 
@@ -117,12 +119,12 @@ func timeTrack(start time.Time, name string) {
 
 func main() {
 
-	os.Setenv("Defaultresponse", `{"balance":"1200"}`)
-	sessionStore.Options.MaxAge = 180
+	// os.Setenv("DefaultBalance", `{"balance":"1200"}`)
+	// sessionStore.Options.MaxAge = 180
 	oktaUtils.ParseEnvironment()
 
 	// Retrieve local IP
-	uri := GetOutboundIP()
+	uri := GetOutboundIP(":8080")
 
 	http.HandleFunc("/", HomeHandler)
 	http.HandleFunc("/login", LoginHandler)
@@ -254,9 +256,8 @@ func AccountHandler(w http.ResponseWriter, r *http.Request) {
 
 	defer timeTrack(time.Now(), "Account Handler")
 
-	receivedresponse := getdasvid(os.Getenv("oauthtoken"))
-
-	err := json.Unmarshal([]byte(receivedresponse), &temp)
+	receivedDASVID := getdasvid(os.Getenv("oauthtoken"))
+	err := json.Unmarshal([]byte(receivedDASVID), &temp)
 	if err != nil {
 		log.Fatalf("error:", err)
 	}
@@ -266,108 +267,187 @@ func AccountHandler(w http.ResponseWriter, r *http.Request) {
 		returnmsg := "Oauth token validation error"
 
 		Data = PocData{
-			Returnmsg: returnmsg,
+			AppURI:					HostIP,
+			Profile:         		getProfileData(r),
+			IsAuthenticated: 		isAuthenticated(r),
+			Returnmsg: 				returnmsg,
 		}
 
 		log.Printf(returnmsg)
-		tpl.ExecuteTemplate(w, "dasvidgenerated.gohtml", Data)
+		tpl.ExecuteTemplate(w, "home.gohtml", Data)
+
+	} else {
+
+		os.Setenv("DASVIDToken", temp.DASVIDToken)
+
+		dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
+
+		Data = PocData{
+			AppURI:					HostIP,
+			Profile:         		getProfileData(r),
+			IsAuthenticated: 		isAuthenticated(r),
+			DASVIDToken:			temp.DASVIDToken,
+			DASVIDClaims:			dasvidclaims,
+			HaveDASVID:				haveDASVID(),
+			SigValidation: 			fmt.Sprintf("%v", temp.OauthSigValidation),
+			ExpValidation:			fmt.Sprintf("%v", temp.OauthExpValidation),
+		}
+
+		tpl.ExecuteTemplate(w, "account.gohtml", Data)
 	}
-
-	os.Setenv("DASVIDToken", temp.DASVIDToken)
-
-	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
-
-	Data = PocData{
-		AppURI:					HostIP,
-		Profile:         		getProfileData(r),
-		IsAuthenticated: 		isAuthenticated(r),
-		DASVIDToken:			temp.DASVIDToken,
-		DASVIDClaims:			dasvidclaims,
-		HaveDASVID:				haveDASVID(),
-		SigValidation: 			fmt.Sprintf("%v", temp.OauthSigValidation),
-		ExpValidation:			fmt.Sprintf("%v", temp.OauthExpValidation),
-	}
-
-	tpl.ExecuteTemplate(w, "account.gohtml", Data)
-
 }
 
 func CheckbalanceHandler(w http.ResponseWriter, r *http.Request) {
 
 	defer timeTrack(time.Now(), "Check Balance")
-
-	// target workload na consulta ao bd:
-	// se subj web 
-	//   retorna email e balance
 	
-	// se subj mob
-	//  retorna telefone e balance
+	var funds Balancetemp
 
-	// Resposta padrao pode ser algo tipo:
-	// {"user":"email or phone nmber", "balance":"1200"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serverURL := GetOutboundIP(":8444")
+
+	source, err := workloadapi.NewX509Source(ctx, workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath)))
+	if err != nil {
+		log.Fatalf("Unable to create X509Source %v", err)
+	}
+	defer source.Close()
+
+	// Allowed SPIFFE ID
+	serverID := spiffeid.RequireTrustDomainFromString("example.org")
+
+	// Create a `tls.Config` to allow mTLS connections, and verify that presented certificate match allowed SPIFFE ID rule
+	tlsConfig := tlsconfig.MTLSClientConfig(source, source, tlsconfig.AuthorizeMemberOf(serverID))
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
 
 	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
-	defaultresponse := os.Getenv("Defaultresponse")
-	
+
+	endpoint := "https://"+serverURL+"/get_balance?DASVID="+os.Getenv("DASVIDToken")
+
+	response, err := client.Get(endpoint)
+	if err != nil {
+		log.Fatalf("Error connecting to %q: %v", serverURL, err)
+	}
+
+	defer response.Body.Close()
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		log.Fatalf("Unable to read body: %v", err)
+	}
+
 	// With dasvid, app can make a call to middle tier, asking for user funds.
-	err := json.Unmarshal([]byte(defaultresponse), &funds)
+	err = json.Unmarshal([]byte(body), &funds)
 	if err != nil {
 		fmt.Println("error:", err)
 	}
 
-	Data = PocData{
-		AppURI:					HostIP,
-		Profile:         		getProfileData(r),
-		IsAuthenticated: 		isAuthenticated(r),
-		DASVIDClaims:			dasvidclaims,
-		HaveDASVID:				haveDASVID(),
-		Balance:				funds.Balance,
+	if funds.Returnmsg != "" {
+		
+		fmt.Println("Return msg error:", funds.Returnmsg)
+		Data = PocData{
+			AppURI:					HostIP,
+			Profile:         		getProfileData(r),
+			IsAuthenticated: 		isAuthenticated(r),
+			HaveDASVID:				haveDASVID(),
+			Returnmsg:				funds.Returnmsg,
+		}
+		
+		tpl.ExecuteTemplate(w, "home.gohtml", Data)	
+		
+	} else {
+
+		Data = PocData{
+			AppURI:					HostIP,
+			Profile:         		getProfileData(r),
+			IsAuthenticated: 		isAuthenticated(r),
+			DASVIDClaims:			dasvidclaims,
+			HaveDASVID:				haveDASVID(),
+			Balance:				funds.Balance,
+		}
+
+		tpl.ExecuteTemplate(w, "get_balance.gohtml", Data)	
 	}
-
-	tpl.ExecuteTemplate(w, "get_balance.gohtml", Data)	
-
 }
 
 func DepositHandler(w http.ResponseWriter, r *http.Request) {
 
-	defaultresponse := os.Getenv("Defaultresponse")
-	var depositvalue int
+	defer timeTrack(time.Now(), "Deposit Handler")
 
-	if r.Method != "POST" {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var funds Balancetemp
+
+	serverURL := GetOutboundIP(":8444")
+	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
+
+	source, err := workloadapi.NewX509Source(ctx, workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath)))
+	if err != nil {
+		log.Fatalf("Unable to create X509Source %v", err)
+	}
+	defer source.Close()
+
+	// Allowed SPIFFE ID
+	serverID := spiffeid.RequireTrustDomainFromString("example.org")
+
+	// Create a `tls.Config` to allow mTLS connections, and verify that presented certificate match allowed SPIFFE ID rule
+	tlsConfig := tlsconfig.MTLSClientConfig(source, source, tlsconfig.AuthorizeMemberOf(serverID))
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
 	}
 
-	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
-	depositvalue, _ = strconv.Atoi(r.FormValue("deposit"))
+	endpoint := "https://"+serverURL+"/deposit?DASVID="+os.Getenv("DASVIDToken")+"&deposit="+r.FormValue("deposit")
+
+	response, err := client.Get(endpoint)
+	if err != nil {
+		log.Fatalf("Error connecting to %q: %v", serverURL, err)
+	}
+
+	defer response.Body.Close()
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		log.Fatalf("Unable to read body: %v", err)
+	}
 
 	// With dasvid, app can make a call to middle tier, asking for user funds.
-	json.Unmarshal([]byte(defaultresponse), &funds)
-
-	tmpcalc, _ := strconv.Atoi(funds.Balance)
-
-	tmpcalc += depositvalue
-
-	funds.Balance = strconv.Itoa(tmpcalc)
-
-	tmp, err := json.Marshal(funds)
+	err = json.Unmarshal([]byte(body), &funds)
 	if err != nil {
 		fmt.Println("error:", err)
 	}
 
-	os.Setenv("Defaultresponse", string(tmp))
+	if funds.Returnmsg != "" {
 
-	Data = PocData{
-		AppURI:			 HostIP,
-		Profile:         getProfileData(r),
-		IsAuthenticated: isAuthenticated(r),
-		DASVIDClaims:	 dasvidclaims,
-		HaveDASVID:		 haveDASVID(),
-		Balance:		 funds.Balance,
+		fmt.Println("Return msg error:", funds.Returnmsg)
+		Data = PocData{
+			AppURI:					HostIP,
+			Profile:         		getProfileData(r),
+			IsAuthenticated: 		isAuthenticated(r),
+			HaveDASVID:				haveDASVID(),
+			Returnmsg:				funds.Returnmsg,
+		}
+		
+		tpl.ExecuteTemplate(w, "home.gohtml", Data)	
+		
+	} else {
+
+		Data = PocData{
+			AppURI:					HostIP,
+			Profile:         		getProfileData(r),
+			IsAuthenticated: 		isAuthenticated(r),
+			DASVIDClaims:			dasvidclaims,
+			HaveDASVID:				haveDASVID(),
+			Balance:				funds.Balance,
+		}
+		
+		tpl.ExecuteTemplate(w, "account.gohtml", Data)
 	}
-
-	
-	tpl.ExecuteTemplate(w, "get_balance.gohtml", Data)
 }
 
 func LogoutHandler(w http.ResponseWriter, r *http.Request) {

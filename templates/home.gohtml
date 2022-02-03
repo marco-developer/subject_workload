@@ -13,14 +13,21 @@
   }
   </script>
 
+    {{if not (eq .Returnmsg "")}}
+      <p style="color: red; font-size: 20px; text-align:center;">Return Message: <span>{{.Returnmsg}}</span></p>
+    {{else}}
     <p></p>
     <p>You have successfully logged in Bank App.</p>
     <p>To allow Bank App to access your data click on the button bellow.</p>    
+    {{end}}
     <button onclick="location.href='http://{{.AppURI}}/account'"  class="btn btn-danger">Generate DA-SVID</button></p>
   </div>
 {{else}}
   <div>
-        <p style="color: red; font-size: 20px; text-align:center;">Please login to access Bank App services.</p>
+    {{if not (eq .Returnmsg "")}}
+      <p style="color: red; font-size: 20px; text-align:center;">Return Message: <span>{{.Returnmsg}}</span></p>
+    {{end}}
+    <p style="color: red; font-size: 20px; text-align:center;">Please login to access Bank App services.</p>
   </div>
  {{end}}
 
