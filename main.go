@@ -48,6 +48,7 @@ const (
 	socketPath   	= "unix:///tmp/spire-agent/public/api.sock"
 	HostIP 			= "192.168.0.5:8080"
 	AssertingwlIP 	= "192.168.0.5:8443" 
+	TargetwlIP		= "192.168.0.5:8444"
 )
 
 type PocData struct {
@@ -306,8 +307,6 @@ func CheckbalanceHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	serverURL := GetOutboundIP(":8444")
-
 	source, err := workloadapi.NewX509Source(ctx, workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath)))
 	if err != nil {
 		log.Fatalf("Unable to create X509Source %v", err)
@@ -327,11 +326,11 @@ func CheckbalanceHandler(w http.ResponseWriter, r *http.Request) {
 
 	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
 
-	endpoint := "https://"+serverURL+"/get_balance?DASVID="+os.Getenv("DASVIDToken")
+	endpoint := "https://"+TargetwlIP+"/get_balance?DASVID="+os.Getenv("DASVIDToken")
 
 	response, err := client.Get(endpoint)
 	if err != nil {
-		log.Fatalf("Error connecting to %q: %v", serverURL, err)
+		log.Fatalf("Error connecting to %q: %v", TargetwlIP, err)
 	}
 
 	defer response.Body.Close()
@@ -383,7 +382,6 @@ func DepositHandler(w http.ResponseWriter, r *http.Request) {
 
 	var funds Balancetemp
 
-	serverURL := GetOutboundIP(":8444")
 	dasvidclaims := dasvid.ParseTokenClaims(os.Getenv("DASVIDToken"))
 
 	source, err := workloadapi.NewX509Source(ctx, workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath)))
@@ -403,11 +401,11 @@ func DepositHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	endpoint := "https://"+serverURL+"/deposit?DASVID="+os.Getenv("DASVIDToken")+"&deposit="+r.FormValue("deposit")
+	endpoint := "https://"+TargetwlIP+"/deposit?DASVID="+os.Getenv("DASVIDToken")+"&deposit="+r.FormValue("deposit")
 
 	response, err := client.Get(endpoint)
 	if err != nil {
-		log.Fatalf("Error connecting to %q: %v", serverURL, err)
+		log.Fatalf("Error connecting to %q: %v", TargetwlIP, err)
 	}
 
 	defer response.Body.Close()
