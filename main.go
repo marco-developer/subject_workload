@@ -51,6 +51,16 @@ const (
 	TargetwlIP		= "192.168.0.5:8444"
 )
 
+type Exchange struct {
+	Error            string `json:"error,omitempty"`
+	ErrorDescription string `json:"error_description,omitempty"`
+	AccessToken      string `json:"access_token,omitempty"`
+	TokenType        string `json:"token_type,omitempty"`
+	ExpiresIn        int    `json:"expires_in,omitempty"`
+	Scope            string `json:"scope,omitempty"`
+	IdToken          string `json:"id_token,omitempty"`
+}
+
 type PocData struct {
 	AppURI			string
 	Profile         map[string]string
@@ -86,7 +96,6 @@ type Balancetemp struct {
 var temp Contents
 var oktaclaims map[string]interface{}
 var dasvidclaims map[string]interface{}
-
 var Data PocData
 
 func init() {
@@ -120,7 +129,6 @@ func timeTrack(start time.Time, name string) {
 
 func main() {
 
-	// os.Setenv("DefaultBalance", `{"balance":"1200"}`)
 	// sessionStore.Options.MaxAge = 180
 	oktaUtils.ParseEnvironment()
 
@@ -564,16 +572,6 @@ func verifyToken(t string) (*verifier.Jwt, error) {
 	}
 
 	return nil, fmt.Errorf("token could not be verified: %s", "")
-}
-
-type Exchange struct {
-	Error            string `json:"error,omitempty"`
-	ErrorDescription string `json:"error_description,omitempty"`
-	AccessToken      string `json:"access_token,omitempty"`
-	TokenType        string `json:"token_type,omitempty"`
-	ExpiresIn        int    `json:"expires_in,omitempty"`
-	Scope            string `json:"scope,omitempty"`
-	IdToken          string `json:"id_token,omitempty"`
 }
 
 func getdasvid(oauthtoken string) (string) {
